@@ -20,7 +20,7 @@
 
 #include "ta_ca_defs.h"
 
-keymaster_error_t mbedtls_decode_pkcs8(keymaster_blob_t key_data,
+keymaster_error_t mbedTLS_decode_pkcs8(keymaster_blob_t key_data,
 				       TEE_Attribute **attrs,
 				       uint32_t *attrs_count,
 				       const keymaster_algorithm_t algorithm,
@@ -37,13 +37,19 @@ TEE_Result mbedTLS_gen_root_cert_ecc(TEE_ObjectHandle ecc_root_key,
 				     keymaster_blob_t *ecc_root_cert);
 
 TEE_Result mbedTLS_gen_attest_key_cert_rsa(TEE_ObjectHandle rsa_root_key,
-						TEE_ObjectHandle rsa_attest_key,
-						keymaster_cert_chain_t *cert_chain,
-						keymaster_blob_t* attest_ext);
+					   TEE_ObjectHandle rsa_attest_key,
+					   keymaster_cert_chain_t *cert_chain,
+					   keymaster_blob_t* attest_ext);
 
 TEE_Result mbedTLS_gen_attest_key_cert_ecc(TEE_ObjectHandle ecc_root_key,
-						TEE_ObjectHandle ecc_attest_key,
-						keymaster_cert_chain_t *cert_chain,
-						keymaster_blob_t *attest_ext);
+					   TEE_ObjectHandle ecc_attest_key,
+					   keymaster_cert_chain_t *cert_chain,
+					   keymaster_blob_t *attest_ext);
+
+/* This function consumes key size in bits */
+keymaster_error_t mbedTLS_decode_ec_sign(keymaster_blob_t *sig,
+					 uint32_t key_size);
+
+keymaster_error_t mbedTLS_encode_ec_sign(uint8_t *out, uint32_t *out_l);
 
 #endif /* MBEDTLS_PROXY_H_ */
