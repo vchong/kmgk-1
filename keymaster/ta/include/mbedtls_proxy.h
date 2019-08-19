@@ -27,6 +27,10 @@ keymaster_error_t mbedTLS_decode_pkcs8(keymaster_blob_t key_data,
 				       uint32_t *key_size,
 				       uint64_t *rsa_public_exponent);
 
+keymaster_error_t mbedTLS_encode_key(keymaster_blob_t *export_data,
+                                     const uint32_t type,
+                                     const TEE_ObjectHandle *obj_h);
+
 // TODO: have a comment here saying something about the RSA
 // algorithm/schema in use or if there are any limitations. I.e, a
 // general description of what kind of root cert it generates.
