@@ -15,8 +15,47 @@
  * limitations under the License.
  */
 
+#include <mbedtls/x509.h>
+
 #include "asn1.h"
 #include "attestation.h"
+
+
+static unsigned int get_key_usage(keymaster_key_param_t *param)
+{
+	unsigned int key_usage = 0;
+
+	if (param->tag != KM_TAG_PURPOSE) {
+		DMSG("Unused parameter tag %x", param->tag);
+		return 0;
+	}
+
+	DMSG("key purpose 0x%08X",param->key_param.enumerated);
+	if ((param->key_param.enumerated == KM_PURPOSE_VERIFY) ||
+		(param->key_param.enumerated == KM_PURPOSE_SIGN))
+	{
+		key_usage = MBEDTLS_X509_KU_DIGITAL_SIGNATURE;
+	}
+	if ((param->key_param.enumerated == KM_PURPOSE_ENCRYPT) ||
+		(param->key_param.enumerated == KM_PURPOSE_DECRYPT))
+	{
+		key_usage |= MBEDTLS_X509_KU_KEY_ENCIPHERMENT | MBEDTLS_X509_KU_DATA_ENCIPHERMENT;
+	}
+
+	return key_usage;
+}
+
+static unsigned int add_key_usage(keymaster_key_characteristics_t *key_chr)
+{
+	unsigned int key_usage = 0;
+
+	for (size_t i = 0; i < key_chr->hw_enforced.length; i++) {
+		key_usage |= get_key_usage(&(key_chr->hw_enforced.params[i]));
+	}
+
+	return key_usage;
+}
+
 
 TEE_Result TA_gen_root_rsa_cert(const TEE_TASessionHandle sessionSTA __unused,
 				TEE_ObjectHandle root_rsa_key,
@@ -42,6 +81,7 @@ TEE_Result TA_gen_attest_rsa_cert(const TEE_TASessionHandle sessionSTA,
 	TEE_Result res = TEE_SUCCESS;
 	TEE_ObjectHandle rootAttKey = TEE_HANDLE_NULL;
 	keymaster_blob_t attest_ext = EMPTY_BLOB;
+	unsigned int key_usage = 0;
 
 	//Attested public key
 	uint32_t attest_key_attr_size = (RSA_MAX_KEY_BUFFER_SIZE + sizeof(uint32_t)) * 2;
@@ -79,6 +119,8 @@ TEE_Result TA_gen_attest_rsa_cert(const TEE_TASessionHandle sessionSTA,
 		res = KM_ERROR_SECURE_HW_COMMUNICATION_FAILED;
 		goto error_1;
 	}
+
+	key_usage = add_key_usage(key_chr);
 
 	//Serialize attested key public attributes
 	attest_key_attr_size = 0;
@@ -166,6 +208,7 @@ TEE_Result TA_gen_attest_rsa_cert(const TEE_TASessionHandle sessionSTA,
 
 	res = mbedTLS_gen_attest_key_cert_rsa(rootAttKey,
 					attestedKey,
+					key_usage,
 					cert_chain,
 					&attest_ext);
 	if (res != TEE_SUCCESS) {
@@ -205,6 +248,7 @@ TEE_Result TA_gen_attest_ec_cert(const TEE_TASessionHandle sessionSTA,
 	TEE_Result res = TEE_SUCCESS;
 	TEE_ObjectHandle rootAttKey = TEE_HANDLE_NULL;
 	keymaster_blob_t attest_ext = EMPTY_BLOB;
+	unsigned int key_usage = 0;
 
 	//Attested public key
 	uint32_t attest_key_attr_size =
@@ -245,6 +289,8 @@ TEE_Result TA_gen_attest_ec_cert(const TEE_TASessionHandle sessionSTA,
 		res = KM_ERROR_SECURE_HW_COMMUNICATION_FAILED;
 		goto error_1;
 	}
+
+	key_usage = add_key_usage(key_chr);
 
 	//Serialize attested key public attributes
 	attest_key_attr_size = 0;
@@ -340,6 +386,7 @@ TEE_Result TA_gen_attest_ec_cert(const TEE_TASessionHandle sessionSTA,
 
 	res = mbedTLS_gen_attest_key_cert_ecc(rootAttKey,
 					attestedKey,
+					key_usage,
 					cert_chain,
 					&attest_ext);
 	if (res != TEE_SUCCESS) {

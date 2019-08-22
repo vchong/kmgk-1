@@ -385,7 +385,7 @@ keymaster_error_t TA_fill_characteristics(
 inline uint32_t TA_blob_size(const keymaster_blob_t *blob)
 {
 	DMSG("%s %d", __func__, __LINE__);
-	return BLOB_SIZE(blob);
+	return BLOB_SIZE_AKMS(blob);
 }
 
 uint32_t TA_characteristics_size(
@@ -571,8 +571,7 @@ bool cmpBlobParam(const keymaster_blob_t blob,
 		blob.data_length);
 }
 
-keymaster_error_t TA_check_params(keymaster_key_blob_t *key,
-				const keymaster_key_param_set_t *key_params,
+keymaster_error_t TA_check_params(const keymaster_key_param_set_t *key_params,
 				const keymaster_key_param_set_t *in_params,
 				keymaster_algorithm_t *algorithm,
 				const keymaster_purpose_t op_purpose,
@@ -581,7 +580,8 @@ keymaster_error_t TA_check_params(keymaster_key_blob_t *key,
 				keymaster_padding_t *op_padding,
 				uint32_t *mac_length,
 				keymaster_blob_t *nonce,
-				uint32_t *min_sec, bool *do_auth)
+				uint32_t *min_sec, bool *do_auth,
+				uint8_t *key_id)
 {
 	hw_auth_token_t auth_token;
 	hw_authenticator_type_t auth_type = HW_AUTH_NONE;
@@ -1038,12 +1038,12 @@ keymaster_error_t TA_check_params(keymaster_key_blob_t *key,
 		}
 	}
 	if (*min_sec != UNDEFINED) {
-		res = TA_check_key_use_timer(key, *min_sec);
+		res = TA_check_key_use_timer(key_id, *min_sec);
 		if (res != KM_ERROR_OK)
 			goto out_cp;
 	}
 	if (max_uses != UNDEFINED) {
-		res = TA_count_key_uses(*key, max_uses);
+		res = TA_count_key_uses(key_id, max_uses);
 		if (res != KM_ERROR_OK)
 			goto out_cp;
 	}

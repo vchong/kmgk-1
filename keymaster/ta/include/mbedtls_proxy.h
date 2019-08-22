@@ -31,6 +31,11 @@ keymaster_error_t mbedTLS_encode_key(keymaster_blob_t *export_data,
                                      const uint32_t type,
                                      const TEE_ObjectHandle *obj_h);
 
+keymaster_error_t mbedTLS_encode_ec_sign(uint8_t *out, uint32_t *out_l);
+
+keymaster_error_t mbedTLS_decode_ec_sign(keymaster_blob_t *sig,
+					 uint32_t key_size);
+
 // TODO: have a comment here saying something about the RSA
 // algorithm/schema in use or if there are any limitations. I.e, a
 // general description of what kind of root cert it generates.
@@ -41,19 +46,15 @@ TEE_Result mbedTLS_gen_root_cert_ecc(TEE_ObjectHandle ecc_root_key,
 				     keymaster_blob_t *ecc_root_cert);
 
 TEE_Result mbedTLS_gen_attest_key_cert_rsa(TEE_ObjectHandle rsa_root_key,
-					   TEE_ObjectHandle rsa_attest_key,
-					   keymaster_cert_chain_t *cert_chain,
-					   keymaster_blob_t* attest_ext);
+						TEE_ObjectHandle rsa_attest_key,
+						unsigned int key_usage,
+						keymaster_cert_chain_t *cert_chain,
+						keymaster_blob_t* attest_ext);
 
 TEE_Result mbedTLS_gen_attest_key_cert_ecc(TEE_ObjectHandle ecc_root_key,
-					   TEE_ObjectHandle ecc_attest_key,
-					   keymaster_cert_chain_t *cert_chain,
-					   keymaster_blob_t *attest_ext);
-
-/* This function consumes key size in bits */
-keymaster_error_t mbedTLS_decode_ec_sign(keymaster_blob_t *sig,
-					 uint32_t key_size);
-
-keymaster_error_t mbedTLS_encode_ec_sign(uint8_t *out, uint32_t *out_l);
+						TEE_ObjectHandle ecc_attest_key,
+						unsigned int key_usage,
+						keymaster_cert_chain_t *cert_chain,
+						keymaster_blob_t *attest_ext);
 
 #endif /* MBEDTLS_PROXY_H_ */

@@ -628,7 +628,7 @@ error_1:
 }
 #endif
 
-TEE_Result TA_read_root_attest_cert(uint32_t type,
+keymaster_error_t TA_read_root_attest_cert(uint32_t type,
 				keymaster_cert_chain_t *cert_chain)
 {
 	TEE_Result res = TEE_SUCCESS;
@@ -641,21 +641,29 @@ TEE_Result TA_read_root_attest_cert(uint32_t type,
 	}
 
 	if (res != TEE_SUCCESS) {
-		goto error_1;
+		EMSG("Failed to open root certificate, res=%x", res);
+		goto error;
 	}
 
-	//Read root certificate, index[1]
-	res = TA_read_attest_cert(rootAttCert,
-			&cert_chain->entries[ROOT_ATT_CERT_INDEX].data,
-			&cert_chain->entries[ROOT_ATT_CERT_INDEX].data_length);
-	if (res != TEE_SUCCESS) {
+	//Read root certificate
+	res = TA_read_attest_cert(rootAttCert, cert_chain);
+	if ((res != TEE_SUCCESS) &&
+		(res != TEE_ERROR_SHORT_BUFFER)) {
 		EMSG("Failed to read root certificate, res=%x", res);
-		goto error_1;
 	}
 
-error_1:
 	TA_close_attest_obj(rootAttCert);
-	return res;
+
+error:
+	switch (res)
+	{
+		case TEE_SUCCESS:
+			return KM_ERROR_OK;
+		case TEE_ERROR_SHORT_BUFFER:
+			return KM_ERROR_INSUFFICIENT_BUFFER_SPACE;
+		default:
+			return KM_ERROR_UNKNOWN_ERROR;
+	}
 }
 
 TEE_Result TA_gen_key_attest_cert(TEE_TASessionHandle sessionSTA, uint32_t type,
@@ -725,19 +733,58 @@ void TA_close_attest_obj(TEE_ObjectHandle attObj)
 	}
 }
 
+static unsigned long fetch_length(const unsigned char *in, unsigned long inlen)
+{
+	unsigned long x, z;
+
+	unsigned long data_offset = 0;
+
+	if (in == NULL) {
+		return 0xFFFFFFFF;
+	}
+
+	/* skip type and read len */
+	if (inlen < 2) {
+		return 0xFFFFFFFF;
+	}
+	++in; ++data_offset;
+
+	/* read len */
+	x = *in++; ++data_offset;
+
+	/* <128 means literal */
+	if (x < 128) {
+		return x+data_offset;
+	}
+	x     &= 0x7F; /* the lower 7 bits are the length of the length */
+	inlen -= 2;
+
+	/* len means len of len! */
+	if (x == 0 || x > 4 || x > inlen) {
+		return 0xFFFFFFFF;
+	}
+
+	data_offset += x;
+	z = 0;
+	while (x--) {
+		z = (z<<8) | ((unsigned long)*in);
+		++in;
+	}
+	return z+data_offset;
+}
+
 TEE_Result TA_read_attest_cert(TEE_ObjectHandle attObj,
-		uint8_t **buffer, size_t *buffSize)
+				keymaster_cert_chain_t *cert_chain)
 {
 	TEE_Result res = TEE_SUCCESS;
+	TEE_ObjectInfo info = { 0 };
 	uint32_t actual_read = 0;
 	uint8_t* pBuf = NULL;
-	size_t nBufLen = 0;
+	size_t nEntryCount = 1; // KEY_ATT_CERT_INDEX used for key attestation
+	size_t nCertLen = 0;
 
-	if ((buffer == NULL) || (buffSize == NULL))
+	if (cert_chain == NULL)
 		return TEE_ERROR_BAD_PARAMETERS;
-
-	*buffer = NULL;
-	*buffSize = 0;
 
 	res = TEE_SeekObjectData(attObj, 0, TEE_DATA_SEEK_SET);
 	if (res != TEE_SUCCESS) {
@@ -745,30 +792,101 @@ TEE_Result TA_read_attest_cert(TEE_ObjectHandle attObj,
 		return res;
 	}
 
-	//Read root certificate, index[1], length
-	res = TEE_ReadObjectData(attObj, &nBufLen, sizeof(size_t), &actual_read);
-	if (res != TEE_SUCCESS || actual_read != sizeof(size_t)) {
-		EMSG("Failed to read root certificate length, res=%x", res);
+	res = TEE_GetObjectInfo1(attObj, &info);
+	if (res != TEE_SUCCESS) {
+		EMSG("Failed to get certificate info, res=%x", res);
 		return res;
 	}
 
-	pBuf = TEE_Malloc(nBufLen, TEE_MALLOC_FILL_ZERO);
-	if (pBuf == NULL) {
-		EMSG("Failed to allocate memory for root certificate data");
-		res = KM_ERROR_MEMORY_ALLOCATION_FAILED;
+	//Read root certificate, index[n], length
+	while (info.dataPosition != info.dataSize)
+	{
+		res = TEE_ReadObjectData(attObj, &nCertLen, sizeof(size_t), &actual_read);
+		if (res != TEE_SUCCESS || actual_read != sizeof(size_t)) {
+			EMSG("Failed to read root certificate length, res=%x", res);
+			return res;
+		}
+		nEntryCount++;
+
+		res = TEE_SeekObjectData(attObj, nCertLen, TEE_DATA_SEEK_CUR);
+		if (res != TEE_SUCCESS) {
+			EMSG("Failed to seek root certificate, res=%x", res);
+			return res;
+		}
+
+		res = TEE_GetObjectInfo1(attObj, &info);
+		if (res != TEE_SUCCESS) {
+			EMSG("Failed to get certificate info, res=%x", res);
+			return res;
+		}
+	}
+
+	if (nEntryCount > cert_chain->entry_count)
+	{
+		cert_chain->entry_count = nEntryCount;
+		return TEE_ERROR_SHORT_BUFFER;
+	}
+
+	res = TEE_SeekObjectData(attObj, 0, TEE_DATA_SEEK_SET);
+	if (res != TEE_SUCCESS) {
+		EMSG("Failed to seek root certificate, res=%x", res);
 		return res;
 	}
 
-	//Read root certificate, index[1], DER data
-	res = TEE_ReadObjectData(attObj, pBuf, nBufLen, &actual_read);
-	if (res != TEE_SUCCESS || actual_read != nBufLen) {
-		EMSG("Failed to read root certificate data, res=%x", res);
-		TEE_Free(pBuf);
-	} else {
-		*buffer = pBuf;
-		*buffSize = nBufLen;
+	res = TEE_GetObjectInfo1(attObj, &info);
+	if (res != TEE_SUCCESS) {
+		EMSG("Failed to get certificate info, res=%x", res);
+		return res;
 	}
 
+	nEntryCount = 1;
+	//Read root certificate, index[n], length
+	while (info.dataPosition != info.dataSize)
+	{
+		res = TEE_ReadObjectData(attObj, &nCertLen, sizeof(size_t), &actual_read);
+		if (res != TEE_SUCCESS || actual_read != sizeof(size_t)) {
+			EMSG("Failed to read root certificate length, res=%x", res);
+			goto error;
+		}
+
+		pBuf = TEE_Malloc(nCertLen, TEE_MALLOC_FILL_ZERO);
+		if (pBuf == NULL) {
+			EMSG("Failed to allocate memory for root certificate data");
+			res = KM_ERROR_MEMORY_ALLOCATION_FAILED;
+			goto error;
+		}
+
+		//Read root certificate, index[n], DER data
+		res = TEE_ReadObjectData(attObj, pBuf, nCertLen, &actual_read);
+		if (res != TEE_SUCCESS || actual_read != nCertLen) {
+			TEE_Free(pBuf);
+			EMSG("Failed to read root certificate data, res=%x", res);
+			goto error;
+		}
+		nCertLen = fetch_length(pBuf,nCertLen);
+
+		cert_chain->entries[nEntryCount].data = pBuf;
+		cert_chain->entries[nEntryCount].data_length = nCertLen;
+		nEntryCount++;
+
+		res = TEE_GetObjectInfo1(attObj, &info);
+		if (res != TEE_SUCCESS) {
+			EMSG("Failed to get certificate info, res=%x", res);
+			goto error;
+		}
+	}
+
+	return TEE_SUCCESS;
+error:
+	for (nEntryCount=1;nEntryCount<cert_chain->entry_count;nEntryCount++)
+	{
+		if (cert_chain->entries[nEntryCount].data != NULL)
+		{
+			TEE_Free(cert_chain->entries[nEntryCount].data);
+			cert_chain->entries[nEntryCount].data_length = 0;
+			cert_chain->entries[nEntryCount].data = NULL;
+		}
+	}
 	return res;
 }
 
@@ -832,7 +950,7 @@ exit:
 }
 
 #ifdef CFG_ATTESTATION_PROVISIONING
-keymaster_error_t TA_SetAttestationKey(TEE_Param params[TEE_NUM_PARAMS])
+keymaster_error_t TA_SetAttestationKey(TEE_TASessionHandle sessionSTA, TEE_Param params[TEE_NUM_PARAMS])
 {
 	uint8_t *in = NULL;
 	uint8_t *in_end = NULL;
@@ -855,7 +973,7 @@ keymaster_error_t TA_SetAttestationKey(TEE_Param params[TEE_NUM_PARAMS])
 	}
 	TEE_MemMove(&algorithm, in, sizeof(algorithm));
 	in += sizeof(algorithm);
-	TA_deserialize_blob(in, in_end, &input, false, &res, true);
+	TA_deserialize_blob_akms(in, in_end, &input, false, &res, true);
 	if (res != KM_ERROR_OK) {
 		EMSG("Failed to deserialize key blob");
 		return res;
@@ -865,7 +983,7 @@ keymaster_error_t TA_SetAttestationKey(TEE_Param params[TEE_NUM_PARAMS])
 	if (res != KM_ERROR_OK)
 		EMSG("Something wrong with root EC key, res=%x", result);
 
-	return res;
+    	return res;
 }
 
 keymaster_error_t TA_AppendAttestationCertKey(TEE_Param params[TEE_NUM_PARAMS])
@@ -891,7 +1009,7 @@ keymaster_error_t TA_AppendAttestationCertKey(TEE_Param params[TEE_NUM_PARAMS])
 	}
 	TEE_MemMove(&algorithm, in, sizeof(algorithm));
 	in += sizeof(algorithm);
-	TA_deserialize_blob(in, in_end, &input, false, &res, true);
+	TA_deserialize_blob_akms(in, in_end, &input, false, &res, true);
 	if (res != KM_ERROR_OK)
 		goto out;
 

@@ -486,7 +486,7 @@ static keymaster_error_t TA_importKey(TEE_Param params[TEE_NUM_PARAMS])
 	in += TA_deserialize_key_format(in, in_end, &key_format, &res);
 	if (res != KM_ERROR_OK)
 		goto out;
-	in += TA_deserialize_blob(in, in_end, &key_data, false, &res, false);
+	in += TA_deserialize_blob_akms(in, in_end, &key_data, false, &res, false);
 	if (res != KM_ERROR_OK)
 		goto out;
 
@@ -511,6 +511,21 @@ static keymaster_error_t TA_importKey(TEE_Param params[TEE_NUM_PARAMS])
 				goto out;
 			}
 		}
+		if (key_algorithm == KM_ALGORITHM_HMAC && (key_size % 8 != 0 ||
+						key_size > MAX_KEY_HMAC ||
+						key_size < MIN_KEY_HMAC)) {
+			EMSG("HMAC key size must be multiple of 8 in range from %d to %d",
+						MIN_KEY_HMAC, MAX_KEY_HMAC);
+			res = KM_ERROR_UNSUPPORTED_KEY_SIZE;
+			goto out;
+		} else if (key_algorithm == KM_ALGORITHM_AES &&
+				key_size != 128 && key_size != 192
+				&& key_size != 256) {
+			EMSG("Unsupported key size %d ! Supported only 128, 192 and 256",key_size);
+			res = KM_ERROR_UNSUPPORTED_KEY_SIZE;
+			goto out;
+		}
+
 		attrs_in = TEE_Malloc(sizeof(TEE_Attribute),
 							TEE_MALLOC_FILL_ZERO);
 		if (!attrs_in) {
@@ -522,20 +537,6 @@ static keymaster_error_t TA_importKey(TEE_Param params[TEE_NUM_PARAMS])
 
 		TEE_InitRefAttribute(attrs_in, TEE_ATTR_SECRET_VALUE,
 				(void *) key_data.data, key_data.data_length);
-		if (key_algorithm == KM_ALGORITHM_HMAC && (key_size % 8 != 0 ||
-						key_size > MAX_KEY_HMAC ||
-						key_size < MIN_KEY_HMAC)) {
-			EMSG("HMAC key size must be multiple of 8 in range from %d to %d",
-						MIN_KEY_HMAC, MAX_KEY_HMAC);
-			res = KM_ERROR_UNSUPPORTED_KEY_SIZE;
-			goto free_attrs;
-		} else if (key_algorithm == KM_ALGORITHM_AES &&
-				key_size != 128 && key_size != 192
-				&& key_size != 256) {
-			EMSG("Unsupported key size! Supported only 128, 192 and 256");
-			res = KM_ERROR_UNSUPPORTED_KEY_SIZE;
-			goto free_attrs;
-		}
 	} else {/* KM_KEY_FORMAT_PKCS8 */
 		if (key_algorithm != KM_ALGORITHM_RSA &&
 				key_algorithm != KM_ALGORITHM_EC) {
@@ -608,7 +609,7 @@ out:
 		(key_data.data && key_format == KM_KEY_FORMAT_RAW && res != KM_ERROR_OK)) {
 		TEE_Free(key_data.data);
 	}
-free_attrs:
+
 	free_attrs(attrs_in, attrs_in_count);
 	TA_free_params(&params_t);
 	TA_free_params(&characts.sw_enforced);
@@ -713,6 +714,7 @@ static keymaster_error_t TA_attestKey(TEE_Param params[TEE_NUM_PARAMS])
 	keymaster_key_param_set_t attest_params = EMPTY_PARAM_SET;/* IN */
 	keymaster_cert_chain_t cert_chain = EMPTY_CERT_CHAIN;/* OUT */
 	keymaster_error_t res = KM_ERROR_OK;
+	TEE_Result result = TEE_SUCCESS;
 	keymaster_blob_t *challenge = NULL;
 	bool includeUniqueID = false;
 	bool resetSinceIDRotation = false;
@@ -742,9 +744,9 @@ static keymaster_error_t TA_attestKey(TEE_Param params[TEE_NUM_PARAMS])
 
 #ifndef CFG_ATTESTATION_PROVISIONING
 	//This call creates keys/certs only once during first TA run
-	res = TA_create_attest_objs(sessionSTA);
-	if (res != TEE_SUCCESS) {
-		EMSG("Failed to create attestation objects, res=%x", res);
+	result = TA_create_attest_objs(sessionSTA);
+	if (result != TEE_SUCCESS) {
+		EMSG("Failed to create attestation objects, res=%x", result);
 		res = KM_ERROR_UNKNOWN_ERROR;
 		goto exit;
 	}
@@ -853,32 +855,39 @@ static keymaster_error_t TA_attestKey(TEE_Param params[TEE_NUM_PARAMS])
 		//TODO TA_generate_UniqueID(...);
 	}
 
+	//Read Root attestation certificate (must be generated and stored before)
+	res = TA_read_root_attest_cert(key_type, &cert_chain);
+	if (res != KM_ERROR_INSUFFICIENT_BUFFER_SPACE) {
+		EMSG("Failed to get att cert chain len, res=%x", res);
+		goto exit;
+	}
+
 	//Allocate memory for chain of certificates
-	//NOTE: current impl support only 2 certificates in chain
 	cert_chain.entries = TEE_Malloc(
-			sizeof(keymaster_blob_t)*ATT_CERT_CHAIN_LEN,
+			sizeof(keymaster_blob_t)*cert_chain.entry_count,
 			TEE_MALLOC_FILL_ZERO);
 	if (!cert_chain.entries) {
 		EMSG("Failed to allocate memory for chain of certificates");
 		res = KM_ERROR_MEMORY_ALLOCATION_FAILED;
 		goto exit;
 	}
-	cert_chain.entry_count = ATT_CERT_CHAIN_LEN;
 
 	//Read Root attestation certificate (must be generated and stored before)
 	res = TA_read_root_attest_cert(key_type, &cert_chain);
-	if (res != TEE_SUCCESS) {
+	if (res != KM_ERROR_OK) {
 		EMSG("Failed to read root att cert, res=%x", res);
 		goto exit;
 	}
 	//Generate key attestation certificate (using STA ASN.1)
-	res = TA_gen_key_attest_cert(sessionSTA, key_type, attestedKey,
+	result = TA_gen_key_attest_cert(sessionSTA, key_type, attestedKey,
 				     &attest_params, &key_chr, &cert_chain,
 				     verified_boot_state);
-	if (res != TEE_SUCCESS) {
-		EMSG("Failed to gen key att cert, res=%x", res);
+	if (result != TEE_SUCCESS) {
+		EMSG("Failed to gen key att cert, res=%x", result);
+		res = KM_ERROR_UNKNOWN_ERROR;
 		goto exit;
 	}
+
 	//Check output buffer length
 	if (TA_cert_chain_size(&cert_chain) > out_size) {
 		EMSG("Short output buffer for chain of certificates");
@@ -890,11 +899,7 @@ exit:
 	//Serialize output chain of certificates
 	out += TA_serialize_rsp_err(out, &res);
 	if (res == KM_ERROR_OK) {
-	out += TA_serialize_cert_chain_akms(out, &cert_chain, &res);
-		if (res != KM_ERROR_OK) {
-			EMSG("Failed to serialize output chain of certificates, res=%x", res);
-			goto exit;
-		}
+		out += TA_serialize_cert_chain_akms(out, &cert_chain, &res);
 	}
 	params[1].memref.size = out - (uint8_t *)params[1].memref.buffer;
 
@@ -962,7 +967,8 @@ static keymaster_error_t TA_deleteKey(TEE_Param params[TEE_NUM_PARAMS])
 	out = (uint8_t *) params[1].memref.buffer;
 	out += TA_serialize_rsp_err(out, &res);
 	params[1].memref.size = out - (uint8_t *)params[1].memref.buffer;
-	return KM_ERROR_OK;
+
+	return res;
 }
 
 //Deletes all keys
@@ -975,7 +981,8 @@ static keymaster_error_t TA_deleteAllKeys(TEE_Param params[TEE_NUM_PARAMS])
 	out = (uint8_t *) params[1].memref.buffer;
 	out += TA_serialize_rsp_err(out, &res);
 	params[1].memref.size = out - (uint8_t *)params[1].memref.buffer;
-	return KM_ERROR_OK;
+
+	return res;
 }
 
 //Permanently disable the ID attestation feature.
@@ -1024,6 +1031,7 @@ static keymaster_error_t TA_begin(TEE_Param params[TEE_NUM_PARAMS])
 	TEE_ObjectHandle obj_h = TEE_HANDLE_NULL;
 	TEE_OperationHandle *operation = TEE_HANDLE_NULL;
 	TEE_OperationHandle *digest_op = TEE_HANDLE_NULL;
+	uint8_t key_id[TAG_LENGTH];
 
 	DMSG("%s %d", __func__, __LINE__);
 	in = (uint8_t *) params[0].memref.buffer;
@@ -1059,6 +1067,10 @@ static keymaster_error_t TA_begin(TEE_Param params[TEE_NUM_PARAMS])
 	if (res != KM_ERROR_OK)
 		goto out;
 	key_material = TEE_Malloc(key.key_material_size, TEE_MALLOC_FILL_ZERO);
+
+	memcpy(key_id, key.key_material + key.key_material_size - TAG_LENGTH,
+	       TAG_LENGTH);
+
 	res = TA_restore_key(key_material, &key, &key_size,
 						 &type, &obj_h, &params_t);
 	if (res != KM_ERROR_OK)
@@ -1076,10 +1088,10 @@ static keymaster_error_t TA_begin(TEE_Param params[TEE_NUM_PARAMS])
 	default:/* HMAC */
 		algorithm = KM_ALGORITHM_HMAC;
 	}
-	res = TA_check_params(&key, &params_t, &in_params,
+	res = TA_check_params(&params_t, &in_params,
 				&algorithm, purpose, &digest, &mode,
 				&padding, &mac_length, &nonce,
-				&min_sec, &do_auth);
+				&min_sec, &do_auth, key_id);
 	if (res != KM_ERROR_OK)
 		goto out;
 	if (algorithm == KM_ALGORITHM_AES && mode !=
@@ -1098,6 +1110,7 @@ static keymaster_error_t TA_begin(TEE_Param params[TEE_NUM_PARAMS])
 		}
 		nonce_param = TEE_Malloc(sizeof(keymaster_key_param_t), TEE_MALLOC_FILL_ZERO);
 		if (!nonce_param) {
+			TEE_Free(secretIV);
 			EMSG("Failed to allocate memory for parameters");
 			res = KM_ERROR_MEMORY_ALLOCATION_FAILED;
 			goto out;
@@ -1126,8 +1139,9 @@ static keymaster_error_t TA_begin(TEE_Param params[TEE_NUM_PARAMS])
 			goto out;
 	}
 	res = TA_start_operation(operation_handle, key, min_sec,
-					operation, purpose, digest_op, do_auth,
-					padding, mode, mac_length, digest, nonce);
+				 operation, purpose, digest_op, do_auth,
+				 padding, mode, mac_length, digest,
+				 nonce, key_id);
 	if (res != KM_ERROR_OK)
 		goto out;
 
@@ -1515,6 +1529,7 @@ TEE_Result TA_InvokeCommandEntryPoint(void *sess_ctx __unused,
 		return TA_GetAuthTokenKey(params);
 
 	default:
-		return TEE_ERROR_BAD_PARAMETERS;
+		DMSG("Unknown command %d",cmd_id);
+		return KM_ERROR_UNIMPLEMENTED;
 	}
 }

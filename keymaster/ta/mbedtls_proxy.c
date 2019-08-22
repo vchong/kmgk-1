@@ -309,13 +309,7 @@ static TEE_Result mbedTLS_import_ecc_pk(mbedtls_pk_context *pk,
 		goto out;
 	}
 
-	ecc = (mbedtls_ecdsa_context *)TEE_Malloc(sizeof(mbedtls_ecdsa_context),
-						  TEE_MALLOC_FILL_ZERO);
-	if (ecc == NULL)
-	{
-		res = TEE_ERROR_OUT_OF_MEMORY;
-		goto out;
-	}
+	ecc = pk->pk_ctx;
 
 	mbedtls_ecdsa_init(ecc);
 
@@ -391,12 +385,14 @@ static TEE_Result mbedTLS_import_ecc_pk(mbedtls_pk_context *pk,
 		}
 
 		for (uint32_t i = 0; i < (KM_ATTR_COUNT_EC - 1); i++) {
+			key_attr_buf_size = EC_MAX_KEY_BUFFER_SIZE;
+
 			res = TEE_GetObjectBufferAttribute(key_obj,
 							   attr_ids[i],
 							   key_attr_buf,
 							   &key_attr_buf_size);
 			if (res != TEE_SUCCESS) {
-				EMSG("Failed to get attribute %d, res=%x", i, res);
+				EMSG("Failed to get attribute %d size %d, res=%x", i, key_attr_buf_size, res);
 				goto out;
 			}
 
@@ -455,8 +451,6 @@ static TEE_Result mbedTLS_import_ecc_pk(mbedtls_pk_context *pk,
 		goto out;
 	}
 
-	pk->pk_ctx = ecc;
-
 out:
 	mbedtls_ctr_drbg_free(&ctr_drbg);
 	mbedtls_entropy_free(&entropy);
@@ -466,7 +460,6 @@ out:
 
 	if (res != TEE_SUCCESS) {
 		mbedtls_ecp_keypair_free(ecc);
-		TEE_Free(ecc);
 	}
 
 	return res;
@@ -526,13 +519,7 @@ static TEE_Result mbedTLS_import_rsa_pk(mbedtls_pk_context *pk,
 		goto out;
 	}
 
-	rsa = (mbedtls_rsa_context *) TEE_Malloc(sizeof(mbedtls_rsa_context),
-					       TEE_MALLOC_FILL_ZERO);
-	if (rsa == NULL)
-	{
-		res = TEE_ERROR_OUT_OF_MEMORY;
-		goto out;
-	}
+	rsa = pk->pk_ctx;
 
 	mbedtls_rsa_init(rsa, MBEDTLS_RSA_PKCS_V15, 0);
 
@@ -599,10 +586,17 @@ static TEE_Result mbedTLS_import_rsa_pk(mbedtls_pk_context *pk,
 		/* User transient object API */
 
 		for (uint32_t i = 0; i < KM_ATTR_COUNT_RSA; i++) {
+
+			key_attr_buf_size = RSA_MAX_KEY_BUFFER_SIZE;
 			res = TEE_GetObjectBufferAttribute(key_obj,
 							   attr_ids[i],
 							   key_attr_buf,
 							   &key_attr_buf_size);
+			if (res != TEE_SUCCESS)
+			{
+				EMSG("Failed to get attribute %d size %d, res=%x", i, key_attr_buf_size, res);
+				goto out;
+			}
 
 			/* provide sane value */
 			mbedtls_mpi_init(&attrs[i]);
@@ -642,8 +636,6 @@ static TEE_Result mbedTLS_import_rsa_pk(mbedtls_pk_context *pk,
 	mbedtls_mpi_mod_mpi(&rsa->DQ, &rsa->D, &K);
 	mbedtls_mpi_inv_mod(&rsa->QP, &rsa->Q, &rsa->P);
 
-	pk->pk_ctx = rsa;
-
 out:
 	mbedtls_ctr_drbg_free(&ctr_drbg);
 	mbedtls_entropy_free(&entropy);
@@ -654,7 +646,6 @@ out:
 
 	if (res != TEE_SUCCESS) {
 		mbedtls_rsa_free(rsa);
-		TEE_Free(rsa);
 	}
 
 	return res;
@@ -769,14 +760,15 @@ static TEE_Result mbedTLS_gen_root_cert(mbedtls_pk_context *issuer_key,
 
 	DMSG("Generated certificate: \n");
 	DHEXDUMP(buf + blen - ret, ret);
-
-	if (root_cert->data_length < (uint32_t)ret)
+	root_cert->data_length = ret;
+	root_cert->data = TEE_Malloc((uint32_t)root_cert->data_length,
+				     TEE_MALLOC_FILL_ZERO);
+	if (!root_cert->data)
 	{
-		res = TEE_ERROR_SHORT_BUFFER;
-		root_cert->data_length = ret;
+		res = TEE_ERROR_OUT_OF_MEMORY;
 		goto out;
 	}
-	root_cert->data_length = ret;
+
 	TEE_MemMove(root_cert->data, buf + blen - ret,
 			ret);
 	// TODO: check root_cert->data
@@ -880,18 +872,6 @@ TEE_Result mbedTLS_gen_root_cert_ecc(TEE_ObjectHandle ecc_root_key,
 	}
 
 	res = mbedTLS_gen_root_cert(&issuer_key, ecc_root_cert, cert_root_subject_ecc);
-	if (res != TEE_ERROR_SHORT_BUFFER)
-	{
-		EMSG("mbedTLS_gen_root_cert: failed: %#x", res);
-		goto out;
-	}
-	ecc_root_cert->data = TEE_Malloc(ecc_root_cert->data_length, TEE_MALLOC_FILL_ZERO);
-	if (ecc_root_cert->data == NULL)
-	{
-		res = TEE_ERROR_OUT_OF_MEMORY;
-		goto out;
-	}
-	res = mbedTLS_gen_root_cert(&issuer_key, ecc_root_cert, cert_root_subject_ecc);
 	if (res != TEE_SUCCESS ) {
 		EMSG("mbedTLS_gen_root_cert: failed: %#x", res);
 		TEE_Free(ecc_root_cert->data);
@@ -905,6 +885,7 @@ out:
 
 static TEE_Result mbedTLS_attest_key_cert(mbedtls_pk_context *issuer_key,
 					  mbedtls_pk_context *subject_key,
+					  unsigned int key_usage,
 					  keymaster_blob_t *attest_cert,
 					  keymaster_blob_t *attest_ext,
 					  char *cert_issuer)
@@ -968,7 +949,8 @@ static TEE_Result mbedTLS_attest_key_cert(mbedtls_pk_context *issuer_key,
 		goto out;
 	}
 
-	ret = mbedtls_x509write_crt_set_basic_constraints(&crt, 1, -1);
+	/* cA to false cause key_usage do not contain MBEDTLS_X509_KU_KEY_CERT_SIGN */
+	ret = mbedtls_x509write_crt_set_basic_constraints(&crt, 0, -1);
 	if (ret) {
 		EMSG("mbedtls_x509write_crt_set_basic_constraints: failed: -%#x", -ret);
 		res = TEE_ERROR_BAD_FORMAT;
@@ -992,8 +974,7 @@ static TEE_Result mbedTLS_attest_key_cert(mbedtls_pk_context *issuer_key,
 	}
 
 	ret = mbedtls_x509write_crt_set_key_usage(&crt,
-					    MBEDTLS_X509_KU_DIGITAL_SIGNATURE |
-					    MBEDTLS_X509_KU_KEY_CERT_SIGN);
+					    key_usage);
 	if (ret) {
 		EMSG("mbedtls_x509write_crt_set_key_usage: failed: -%#x",
 				-ret);
@@ -1046,14 +1027,15 @@ out:
 
 TEE_Result mbedTLS_gen_attest_key_cert_rsa(TEE_ObjectHandle rsa_root_key,
 						TEE_ObjectHandle rsa_attest_key,
+						unsigned int key_usage,
 						keymaster_cert_chain_t *cert_chain,
 						keymaster_blob_t *attest_ext)
 {
 	int ret;
 	TEE_Result res = TEE_SUCCESS;
 	keymaster_blob_t *rsa_attest_cert = &cert_chain->entries[KEY_ATT_CERT_INDEX];
-	mbedtls_pk_context issuer_key = {0};
-	mbedtls_pk_context subject_key = {0};
+	mbedtls_pk_context issuer_key = {NULL,NULL};
+	mbedtls_pk_context subject_key = {NULL,NULL};
 	mbedtls_x509_crt *cert = NULL;
    	char cert_subject_rsa[1024];
     const unsigned char *p = (unsigned char*)cert_chain->entries[ROOT_ATT_CERT_INDEX].data;
@@ -1098,7 +1080,7 @@ TEE_Result mbedTLS_gen_attest_key_cert_rsa(TEE_ObjectHandle rsa_root_key,
 	}
 
 	res = mbedTLS_attest_key_cert(&issuer_key, &subject_key,
-				rsa_attest_cert, attest_ext, cert_subject_rsa );
+				key_usage,rsa_attest_cert, attest_ext, cert_subject_rsa );
 	if (res) {
 		EMSG("mbedTLS_attest_key_cert: failed: %#x", res);
 		goto out;
@@ -1114,14 +1096,15 @@ out:
 
 TEE_Result mbedTLS_gen_attest_key_cert_ecc(TEE_ObjectHandle ecc_root_key,
 					   	TEE_ObjectHandle ecc_attest_key,
+						unsigned int key_usage,
 						keymaster_cert_chain_t *cert_chain,
 						keymaster_blob_t *attest_ext)
 {
 	int ret;
 	TEE_Result res = TEE_SUCCESS;
 	keymaster_blob_t *ecc_attest_cert = &cert_chain->entries[KEY_ATT_CERT_INDEX];
-	mbedtls_pk_context issuer_key = {0};
-	mbedtls_pk_context subject_key = {0};
+	mbedtls_pk_context issuer_key = {NULL,NULL};
+	mbedtls_pk_context subject_key = {NULL,NULL};
 	mbedtls_x509_crt *cert = NULL;
    	char cert_subject_ecc[1024];
     const unsigned char *p = (unsigned char*)cert_chain->entries[ROOT_ATT_CERT_INDEX].data;
@@ -1166,7 +1149,7 @@ TEE_Result mbedTLS_gen_attest_key_cert_ecc(TEE_ObjectHandle ecc_root_key,
 	}
 
 	res = mbedTLS_attest_key_cert(&issuer_key, &subject_key,
-				ecc_attest_cert, attest_ext, cert_subject_ecc );
+				key_usage,ecc_attest_cert, attest_ext, cert_subject_ecc );
 	if (res) {
 		EMSG("mbedTLS_attest_key_cert: failed: %#x", res);
 		goto out;
