@@ -405,6 +405,10 @@ static keymaster_error_t TA_generateKey(TEE_Param params[TEE_NUM_PARAMS])
 		goto exit;
 	}
 
+	EMSG("key_material = %p", key_material);
+	EMSG("key_buffer_size = %u", key_buffer_size);
+	EMSG("key_blob.key_material_size = %zu", key_blob.key_material_size);
+
 	TA_serialize_param_set(key_material + key_buffer_size,
 			       key_material + key_blob.key_material_size,
 			       &params_t, &oob);
@@ -735,6 +739,10 @@ static keymaster_error_t TA_importKey(TEE_Param params[TEE_NUM_PARAMS])
 		EMSG("Failed to import key");
 		goto out;
 	}
+
+	EMSG("key_material = %p", key_material);
+	EMSG("key_buffer_size = %u", key_buffer_size);
+	EMSG("key_blob.key_material_size = %zu", key_blob.key_material_size);
 	TA_serialize_param_set(key_material + key_buffer_size,
 			       key_material + key_blob.key_material_size,
 			       &params_t, &oob);
